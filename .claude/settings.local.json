@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"/home/gabriel4804/Documents/Academy/BTG /\" && mkdir -p graph collectors tools agents scheduler && ls -la)",
+      "Bash(python3 -m py_compile graph/neo4j_client.py graph/schema.py graph/queries.py graph/__init__.py)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import requests; print\\(f'requests {requests.__version__} OK'\\)\")",
+      "Bash(python3)",
+      "Bash(python3 -m py_compile collectors/cvm_collector.py)",
+      "Bash(python3 -m collectors.cvm_collector)",
+      "WebFetch(domain:data.anbima.com.br)",
+      "WebSearch",
+      "Bash(python3 -m py_compile tools/cvm_tools.py tools/neo4j_tools.py tools/market_tools.py)"
+    ],
+    "additionalDirectories": [
+      "/home/gabriel4804/Documents/Academy/BTG "
+    ]
+  }
+}

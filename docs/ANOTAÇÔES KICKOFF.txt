@@ -1,0 +1,20 @@
+ANOTAÇÔES KICKOFF
+
+Oferta primaria: Retorno de dinheiro emprestado
+
+Fundos de investimento: Investir o dinheiro e repartir dividendos
+
+Temos uma pipeline interna de investimentos em fundos e oferta. Essa avaliação é feita internamente, eles necessitam de uma analisa abrangente do que existe no mercado como um todo
+
+
+Caminho chato para achar docs na CVM 
+Documentos de analise: Prospecto, Laminas 
+
+Prioridades
+Fundos grandes no mercado
+Rentabilidade
+Historico de rentabilidade
+Fee's de distribuição
+Retono btg 
+Retorno cliente
+preço de tela / valor patrimonial perto de 1  
