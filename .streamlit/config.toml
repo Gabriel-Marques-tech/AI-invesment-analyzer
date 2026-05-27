@@ -1,0 +1,14 @@
+[theme]
+# Paleta oficial BTG Pactual: azul marinho profundo + cinza + branco
+base = "dark"
+primaryColor = "#1E5BB8"
+backgroundColor = "#0A0E1A"
+secondaryBackgroundColor = "#11182A"
+textColor = "#F5F7FA"
+font = "sans serif"
+
+[server]
+runOnSave = true
+
+[browser]
+gatherUsageStats = false

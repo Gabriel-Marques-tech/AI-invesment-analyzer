@@ -335,6 +335,149 @@ def gap_btg_vs_mercado(cliente: Optional[Neo4jClient] = None) -> list[dict]:
     return cliente.executar_leitura(cypher, {"padrao": PADRAO_BTG})
 
 
+def buscar_oferta_completa(
+    id_requerimento: str, cliente: Optional[Neo4jClient] = None
+) -> Optional[dict]:
+    """Retorna todos os atributos de uma oferta + emissor + distribuidores + fundo (se FII)."""
+    cliente = cliente or get_client()
+    res = cliente.executar_leitura(
+        """
+        MATCH (o:Oferta {id_requerimento: $id})
+        OPTIONAL MATCH (e:Emissor)-[:EMITIU]->(o)
+        OPTIONAL MATCH (b:Banco)-[r:DISTRIBUI]->(o)
+        OPTIONAL MATCH (o)-[:EMITIDA_POR]->(f:FundoFII)
+        RETURN o.id_requerimento AS id,
+               o.numero_registro AS numero_registro,
+               o.tipo AS tipo,
+               o.status AS status,
+               coalesce(e.nome, o.nome_emissor) AS emissor,
+               e.cnpj AS emissor_cnpj,
+               o.volume_total AS volume,
+               toString(o.data_registro) AS data_registro,
+               toString(o.data_encerramento) AS data_encerramento,
+               o.regime_distribuicao AS regime,
+               o.publico_alvo AS publico_alvo,
+               o.mercado_negociacao AS mercado,
+               o.preco_emissao_cota AS preco_emissao,
+               o.comissao_coord_distr_pct AS comissao_pct,
+               o.custo_total_oferta_pct AS custo_total_pct,
+               collect(DISTINCT {banco: b.nome, papel: r.papel}) AS distribuidores,
+               f.tipo AS fii_tipo,
+               f.patrimonio_liquido AS fii_pl,
+               f.vp_cota AS fii_vp_cota,
+               f.num_cotistas AS fii_cotistas,
+               f.taxa_administracao AS fii_taxa_adm,
+               f.rendimento_cota_mes AS fii_rend_mes
+        """,
+        {"id": str(id_requerimento)},
+    )
+    return res[0] if res else None
+
+
+def listar_ids_para_seletor(
+    tipo: Optional[str] = None,
+    cliente: Optional[Neo4jClient] = None,
+) -> list[dict]:
+    """Lista resumida de ofertas em andamento para popular dropdowns no comparador."""
+    cliente = cliente or get_client()
+    where_tipo = "AND o.tipo = $tipo" if tipo else ""
+    cypher = f"""
+    MATCH (o:Oferta) WHERE o.status = 'EM_ANDAMENTO' {where_tipo}
+    OPTIONAL MATCH (e:Emissor)-[:EMITIU]->(o)
+    RETURN o.id_requerimento AS id,
+           o.tipo AS tipo,
+           coalesce(e.nome, o.nome_emissor) AS emissor,
+           o.volume_total AS volume,
+           o.numero_registro AS numero_registro
+    ORDER BY coalesce(o.volume_total, 0) DESC
+    """
+    return cliente.executar_leitura(cypher, {"tipo": tipo})
+
+
+def panorama_mercado(cliente: Optional[Neo4jClient] = None) -> dict:
+    """Retorna estatísticas agregadas do mercado de ofertas em andamento.
+
+    Pensa nessa tool como um 'dashboard em texto' — usa quando a pergunta é
+    ampla ('como está o mercado', 'me dê um resumo', 'overview').
+    """
+    cliente = cliente or get_client()
+    res = cliente.executar_leitura(
+        """
+        MATCH (o:Oferta) WHERE o.status = 'EM_ANDAMENTO'
+        OPTIONAL MATCH (b:Banco)-[:DISTRIBUI]->(o)
+        WITH o, collect(DISTINCT b.nome) AS bancos
+        WITH o.tipo AS tipo,
+             count(o) AS qtd,
+             sum(o.volume_total) AS volume_total,
+             avg(o.volume_total) AS volume_medio,
+             max(o.volume_total) AS volume_maximo,
+             count(DISTINCT [b IN bancos WHERE b IS NOT NULL | b][0]) AS bancos_envolvidos
+        RETURN tipo, qtd, volume_total, volume_medio, volume_maximo, bancos_envolvidos
+        ORDER BY qtd DESC
+        """
+    )
+    total = cliente.executar_leitura(
+        """
+        MATCH (o:Oferta) WHERE o.status = 'EM_ANDAMENTO'
+        RETURN count(o) AS total_ofertas,
+               sum(o.volume_total) AS volume_total_mercado
+        """
+    )
+    fii_stats = cliente.executar_leitura(
+        """
+        MATCH (o:Oferta)-[:EMITIDA_POR]->(f:FundoFII)
+        WHERE o.status = 'EM_ANDAMENTO'
+        RETURN count(DISTINCT f) AS fundos_ativos,
+               avg(f.patrimonio_liquido) AS pl_medio,
+               avg(f.taxa_administracao) AS taxa_adm_media,
+               avg(f.rendimento_cota_mes) AS rend_mes_medio,
+               sum(f.num_cotistas) AS total_cotistas
+        """
+    )
+    return {
+        "totais": total[0] if total else {},
+        "por_tipo": res,
+        "fundos_fii_vinculados": fii_stats[0] if fii_stats else {},
+    }
+
+
+def fii_destaque_por_metrica(
+    metrica: str = "patrimonio_liquido",
+    limite: int = 5,
+    cliente: Optional[Neo4jClient] = None,
+) -> list[dict]:
+    """Top N FIIs por uma métrica financeira.
+
+    `metrica` deve ser uma das: patrimonio_liquido, vp_cota, num_cotistas,
+    rendimento_cota_mes, taxa_administracao.
+    Pensa nisso como 'qual o maior FII', 'qual FII rende mais', etc.
+    """
+    metricas_validas = {
+        "patrimonio_liquido", "vp_cota", "num_cotistas",
+        "rendimento_cota_mes", "taxa_administracao",
+    }
+    if metrica not in metricas_validas:
+        return [{"erro": f"métrica inválida. Use uma de: {sorted(metricas_validas)}"}]
+    cliente = cliente or get_client()
+    cypher = f"""
+    MATCH (f:FundoFII)
+    WHERE f.{metrica} IS NOT NULL AND f.{metrica} > 0
+    OPTIONAL MATCH (o:Oferta)-[:EMITIDA_POR]->(f)
+    WHERE o.status = 'EM_ANDAMENTO'
+    WITH f, count(o) AS ofertas_ativas
+    RETURN f.nome AS fundo,
+           f.cnpj AS cnpj,
+           f.tipo AS tipo,
+           f.{metrica} AS valor,
+           f.patrimonio_liquido AS pl,
+           f.num_cotistas AS cotistas,
+           ofertas_ativas
+    ORDER BY valor DESC
+    LIMIT $limite
+    """
+    return cliente.executar_leitura(cypher, {"limite": limite})
+
+
 def ofertas_por_distribuidor(
     banco_padrao: str, cliente: Optional[Neo4jClient] = None
 ) -> list[dict]:
@@ -404,6 +547,152 @@ def ranking_distribuidores(
     LIMIT $limite
     """
     return cliente.executar_leitura(cypher, {"padrao": PADRAO_BTG, "limite": limite})
+
+
+def detectar_alertas_automaticos(
+    volume_minimo_oportunidade: float = 500_000_000,
+    cliente: Optional[Neo4jClient] = None,
+) -> dict:
+    """Varre o grafo aplicando regras de negócio e CRIA alertas no banco.
+
+    Regras aplicadas:
+      1. Oferta > R$ X mi onde BTG não está → NOVA_OFERTA, criticidade ALTA
+      2. FII grande (PL > R$ 1bi) em andamento sem BTG → GAP_COMPETITIVO, MEDIA
+      3. Categoria com market share BTG < 5% → GAP_COMPETITIVO, MEDIA
+      4. Oferta com comissão > 1% extraída do prospecto → BAIXA (info)
+
+    Idempotente: usa MERGE pra não duplicar alertas do mesmo tipo+id_oferta.
+    Retorna estatísticas de quantos foram criados por regra.
+    """
+    cliente = cliente or get_client()
+    stats = {"R1_oferta_grande_sem_btg": 0, "R2_fii_grande_sem_btg": 0,
+             "R3_share_baixo": 0, "R4_comissao_alta": 0}
+
+    # Regra 1: ofertas grandes sem BTG
+    candidatos = cliente.executar_leitura(
+        """
+        MATCH (o:Oferta) WHERE o.status = 'EM_ANDAMENTO'
+          AND o.volume_total > $vmin
+          AND NOT EXISTS {
+            MATCH (b:Banco)-[:DISTRIBUI]->(o)
+            WHERE toUpper(b.nome) CONTAINS $padrao
+          }
+        OPTIONAL MATCH (e:Emissor)-[:EMITIU]->(o)
+        RETURN o.id_requerimento AS id, o.tipo AS tipo,
+               o.volume_total AS volume,
+               coalesce(e.nome, o.nome_emissor) AS emissor
+        ORDER BY volume DESC LIMIT 20
+        """,
+        {"vmin": volume_minimo_oportunidade, "padrao": PADRAO_BTG},
+    )
+    for c in candidatos:
+        descricao = (
+            f"{c['emissor']} ({c['tipo']}) — Volume R$ {(c['volume'] or 0)/1e6:.0f} mi. "
+            f"BTG não está entre os distribuidores."
+        )
+        _merge_alerta(cliente, "NOVA_OFERTA", descricao, "ALTA", c["id"])
+        stats["R1_oferta_grande_sem_btg"] += 1
+
+    # Regra 2: FIIs grandes (PL > 1bi) com oferta ativa sem BTG
+    candidatos = cliente.executar_leitura(
+        """
+        MATCH (o:Oferta)-[:EMITIDA_POR]->(f:FundoFII)
+        WHERE o.status = 'EM_ANDAMENTO'
+          AND f.patrimonio_liquido > 1000000000
+          AND NOT EXISTS {
+            MATCH (b:Banco)-[:DISTRIBUI]->(o)
+            WHERE toUpper(b.nome) CONTAINS $padrao
+          }
+        RETURN o.id_requerimento AS id, f.nome AS fundo,
+               f.patrimonio_liquido AS pl, f.tipo AS tipo_fii
+        ORDER BY pl DESC LIMIT 15
+        """,
+        {"padrao": PADRAO_BTG},
+    )
+    for c in candidatos:
+        descricao = (
+            f"FII {c['fundo']} ({c['tipo_fii']}) — PL R$ {c['pl']/1e9:.2f} bi. "
+            f"Oferta ativa sem BTG entre distribuidores."
+        )
+        _merge_alerta(cliente, "GAP_COMPETITIVO", descricao, "MEDIA", c["id"])
+        stats["R2_fii_grande_sem_btg"] += 1
+
+    # Regra 3: share baixo do BTG (< 5%) em categoria com >=20 ofertas
+    candidatos = cliente.executar_leitura(
+        """
+        MATCH (o:Oferta) WHERE o.status = 'EM_ANDAMENTO'
+        OPTIONAL MATCH (b:Banco)-[:DISTRIBUI]->(o)
+        WITH o, max(CASE WHEN toUpper(coalesce(b.nome,'')) CONTAINS $padrao
+                         THEN 1 ELSE 0 END) AS eh_btg
+        WITH o.tipo AS tipo, sum(eh_btg) AS qtd_btg, count(o) AS qtd_total
+        WHERE qtd_total >= 20 AND toFloat(qtd_btg)/qtd_total < 0.05
+        RETURN tipo, qtd_btg, qtd_total,
+               toFloat(qtd_btg)/qtd_total*100 AS share_pct
+        """,
+        {"padrao": PADRAO_BTG},
+    )
+    for c in candidatos:
+        descricao = (
+            f"Market share BTG em {c['tipo']}: {c['share_pct']:.1f}% "
+            f"({c['qtd_btg']}/{c['qtd_total']} ofertas). Categoria com baixa penetração."
+        )
+        # Sem id_oferta — alerta agregado de categoria; usamos id sintético
+        _merge_alerta(cliente, "GAP_COMPETITIVO", descricao, "MEDIA",
+                     id_oferta=None, chave_unica=f"share_{c['tipo']}")
+        stats["R3_share_baixo"] += 1
+
+    # Regra 4: ofertas com comissão > 1% (extraída do prospecto)
+    candidatos = cliente.executar_leitura(
+        """
+        MATCH (o:Oferta) WHERE o.status = 'EM_ANDAMENTO'
+          AND o.comissao_coord_distr_pct > 1.0
+        OPTIONAL MATCH (e:Emissor)-[:EMITIU]->(o)
+        RETURN o.id_requerimento AS id,
+               coalesce(e.nome, o.nome_emissor) AS emissor,
+               o.comissao_coord_distr_pct AS comissao
+        ORDER BY comissao DESC LIMIT 10
+        """
+    )
+    for c in candidatos:
+        descricao = (
+            f"{c['emissor']} — Comissão de coordenação/distribuição "
+            f"{c['comissao']:.2f}% (acima da mediana típica de 0.7%)."
+        )
+        _merge_alerta(cliente, "VARIACAO_TAXA", descricao, "BAIXA", c["id"])
+        stats["R4_comissao_alta"] += 1
+
+    return stats
+
+
+def _merge_alerta(
+    cliente: Neo4jClient,
+    tipo: str,
+    descricao: str,
+    criticidade: str,
+    id_oferta: Optional[str],
+    chave_unica: Optional[str] = None,
+) -> None:
+    """Cria ou atualiza um alerta de forma idempotente. Usa (tipo, id_oferta ou chave) como chave."""
+    chave = chave_unica or (id_oferta or "global")
+    cliente.executar_escrita(
+        """
+        MERGE (a:Alerta {tipo: $tipo, chave: $chave})
+        ON CREATE SET a.id = randomUUID(),
+                     a.descricao = $descricao,
+                     a.criticidade = $criticidade,
+                     a.criado_em = datetime(),
+                     a.visualizado = false
+        ON MATCH SET a.descricao = $descricao,
+                     a.criticidade = $criticidade,
+                     a.atualizado_em = datetime()
+        WITH a
+        OPTIONAL MATCH (o:Oferta {id_requerimento: $id_oferta})
+        FOREACH (_ IN CASE WHEN o IS NULL THEN [] ELSE [1] END |
+                 MERGE (a)-[:REFERE_SE_A]->(o))
+        """,
+        {"tipo": tipo, "chave": chave, "descricao": descricao,
+         "criticidade": criticidade, "id_oferta": id_oferta},
+    )
 
 
 def listar_alertas_pendentes(

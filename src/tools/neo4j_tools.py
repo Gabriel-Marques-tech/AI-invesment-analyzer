@@ -14,22 +14,33 @@ QUERIES_PERMITIDAS_PREFIXOS = ("MATCH ", "OPTIONAL MATCH ", "WITH ", "CALL ", "R
 
 @tool
 def query_cypher(cypher: str) -> list[dict]:
-    """Executa uma query Cypher de LEITURA no grafo Neo4j.
+    """Executa Cypher de LEITURA no Neo4j. USE para QUALQUER cálculo customizado.
 
-    Use para perguntas analíticas customizadas. A query deve começar com MATCH,
-    OPTIONAL MATCH, WITH, CALL ou RETURN — escritas (CREATE, MERGE, DELETE, SET)
-    são bloqueadas para proteger o banco.
+    Tem todas as agregações: avg, sum, count, min, max, stDev, percentileCont.
+    Você pode (e DEVE) calcular médias, medianas, percentis, ponderações, etc.
 
-    Schema do grafo:
-    - (:Oferta {id_requerimento, tipo, status, taxa_final, volume_total, data_registro})
-    - (:Banco {nome, tipo})
-    - (:Emissor {cnpj, nome, setor})
-    - (:Indexador {nome})
-    - (:FundoFII {ticker, nome, tipo, p_vp, dy_12m, vacancia_fisica, taxa_administracao})
-    - (:Banco)-[:DISTRIBUI {papel}]->(:Oferta)
-    - (:Emissor)-[:EMITIU]->(:Oferta)
-    - (:Oferta)-[:INDEXADA_POR]->(:Indexador)
-    - (:Oferta)-[:EMITIDA_POR]->(:FundoFII)
+    Schema:
+      (:Oferta {id_requerimento, tipo, status, numero_registro, nome_emissor,
+        volume_total, data_registro, data_encerramento, regime_distribuicao,
+        publico_alvo, preco_emissao_cota, comissao_coord_distr_pct,
+        custo_total_oferta_pct})
+      (:FundoFII {ticker, cnpj, nome, tipo, patrimonio_liquido, vp_cota,
+        num_cotistas, taxa_administracao, rendimento_cota_mes})
+      (:Banco {nome, tipo}), (:Emissor {cnpj, nome, setor})
+      (:Banco)-[:DISTRIBUI {papel}]->(:Oferta)
+      (:Emissor)-[:EMITIU]->(:Oferta)
+      (:Oferta)-[:EMITIDA_POR]->(:FundoFII)
+
+    Restrições: só MATCH/WITH/RETURN/CALL/OPTIONAL MATCH. Escritas bloqueadas.
+
+    Exemplos:
+      # Volume médio FII:
+      MATCH (o:Oferta) WHERE o.tipo='FII' AND o.status='EM_ANDAMENTO'
+      RETURN avg(o.volume_total) AS m, count(o) AS n
+
+      # Mediana de taxa adm dos FIIs Tijolo:
+      MATCH (f:FundoFII {tipo:'Tijolo'}) WHERE f.taxa_administracao IS NOT NULL
+      RETURN percentileCont(f.taxa_administracao, 0.5) AS mediana
     """
     cypher_norm = cypher.strip().upper()
     if not any(cypher_norm.startswith(p) for p in QUERIES_PERMITIDAS_PREFIXOS):
@@ -120,6 +131,54 @@ def listar_fundos_fii_destaque(limite: int = 20) -> list[dict]:
         return [{"erro": str(e)}]
 
 
+@tool
+def panorama_mercado() -> dict:
+    """Retorna um resumo agregado do mercado de ofertas em andamento.
+
+    Use SEMPRE quando a pergunta for ampla ('como está o mercado', 'me dê um overview',
+    'o que tem rolando'). Retorna: total de ofertas, volume agregado, breakdown
+    por tipo (FII/CRI/CRA com qtd, volume total, volume médio, máximo) e estatísticas
+    dos FundoFII vinculados (PL médio, taxa adm média, rendimento mensal médio).
+    """
+    try:
+        return queries.panorama_mercado()
+    except Exception as e:
+        return {"erro": str(e)}
+
+
+@tool
+def fii_destaque_por_metrica(metrica: str = "patrimonio_liquido", limite: int = 5) -> list[dict]:
+    """Top N FIIs ordenados por uma métrica financeira (do informe mensal CVM).
+
+    Use quando a pergunta for tipo "qual o maior FII", "FII com mais cotistas",
+    "FII que rende mais", etc.
+
+    Métricas válidas:
+    - 'patrimonio_liquido' → maior PL
+    - 'num_cotistas' → mais cotistas
+    - 'vp_cota' → maior valor patrimonial por cota
+    - 'rendimento_cota_mes' → maior rendimento mensal
+    - 'taxa_administracao' → maior taxa de admin (atenção: maior = pior pro cotista)
+    """
+    try:
+        return queries.fii_destaque_por_metrica(metrica=metrica, limite=limite)
+    except Exception as e:
+        return [{"erro": str(e)}]
+
+
+@tool
+def ranking_distribuidores_tool(limite: int = 15) -> list[dict]:
+    """Top N bancos por nº de ofertas em andamento + volume total distribuído.
+
+    Use para perguntas tipo "quem é o maior distribuidor", "ranking de bancos",
+    "principais coordenadores", "BTG está em que posição".
+    """
+    try:
+        return queries.ranking_distribuidores(limite=limite)
+    except Exception as e:
+        return [{"erro": str(e)}]
+
+
 NEO4J_TOOLS = [
     query_cypher,
     listar_ofertas_em_andamento,
@@ -128,4 +187,7 @@ NEO4J_TOOLS = [
     ofertas_que_btg_nao_distribui,
     historico_taxa_emissor,
     listar_fundos_fii_destaque,
+    panorama_mercado,
+    fii_destaque_por_metrica,
+    ranking_distribuidores_tool,
 ]

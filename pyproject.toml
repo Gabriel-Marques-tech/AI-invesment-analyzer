@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "btg-monitor"
+version = "0.1.0"
+description = "Monitor de ofertas primárias imobiliárias do BTG Pactual — multi-agente sobre dados CVM"
+requires-python = ">=3.11"
+readme = { content-type = "text/markdown", text = "Monitor de ofertas primárias imobiliárias (CRI, CRA, FII) do mercado brasileiro." }
+
+[tool.setuptools.packages.find]
+where = ["src"]
